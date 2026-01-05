@@ -8,6 +8,10 @@ Cargo.lock
 index/
 *.idx
 
+# Test files
+test_data/
+test_client.js
+
 # IDE
 .vscode/
 .idea/
