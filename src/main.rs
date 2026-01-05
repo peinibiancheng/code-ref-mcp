@@ -116,7 +116,7 @@ async fn handle_request(state: &ServerState, request: Value) -> Value {
                         },
                         {
                             "name": "get_symbol",
-                            "description": "Find symbol definitions (functions, classes, etc.) using Tree-sitter parsing.",
+                            "description": "Find symbol definitions (functions, classes, etc.) using pattern-based parsing.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
