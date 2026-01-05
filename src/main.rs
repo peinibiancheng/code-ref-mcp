@@ -1,8 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -25,6 +25,9 @@ use tokio::sync::RwLock;
 use tree_sitter::Parser;
 use walkdir::WalkDir;
 
+const DEFAULT_LINE_NUMBER: usize = 1;
+const CACHE_CAPACITY: usize = 64;
+
 #[derive(Debug, Clone, Serialize)]
 struct SearchResult {
     path: String,
@@ -40,12 +43,53 @@ struct SymbolInfo {
     kind: String,
 }
 
+struct SnippetCache {
+    entries: HashMap<String, Arc<String>>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl SnippetCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get_or_load(&mut self, path: &str) -> Result<Arc<String>, Error> {
+        if let Some(contents) = self.entries.get(path) {
+            return Ok(contents.clone());
+        }
+
+        let contents = fs::read_to_string(path).map_err(|e| Error::Other(e.to_string()))?;
+        let contents = Arc::new(contents);
+        self.insert(path.to_string(), contents.clone());
+        Ok(contents)
+    }
+
+    fn insert(&mut self, path: String, contents: Arc<String>) {
+        if self.entries.contains_key(&path) {
+            return;
+        }
+        self.entries.insert(path.clone(), contents);
+        self.order.push_back(path);
+        if self.order.len() > self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.entries.remove(&old);
+            }
+        }
+    }
+}
+
 struct IndexState {
     index: Index,
     reader: IndexReader,
     path_field: Field,
     body_field: Field,
     symbols: Arc<RwLock<HashMap<String, Vec<SymbolInfo>>>>,
+    snippet_cache: Mutex<SnippetCache>,
 }
 
 impl IndexState {
@@ -73,6 +117,7 @@ impl IndexState {
 
         let documents: Vec<(TantivyDocument, Vec<SymbolInfo>)> = files
             .par_iter()
+            .with_max_len(32)
             .filter_map(|path| {
                 let language = language_for(path)?;
                 let contents = fs::read_to_string(path).ok()?;
@@ -109,6 +154,7 @@ impl IndexState {
             path_field,
             body_field,
             symbols: Arc::new(RwLock::new(symbol_map)),
+            snippet_cache: Mutex::new(SnippetCache::new(CACHE_CAPACITY)),
         })
     }
 
@@ -138,7 +184,18 @@ impl IndexState {
             if let Some(path_value) = retrieved.get_first(self.path_field) {
                 let owned: OwnedValue = path_value.into();
                 if let OwnedValue::Str(path) = owned {
-                    let (line, snippet) = snippet_for_query(Path::new(&path), query_text);
+                    let contents = {
+                        let mut cache = self
+                            .snippet_cache
+                            .lock()
+                            .map_err(|_| Error::Other("snippet cache poisoned".to_string()))?;
+                        cache.get_or_load(&path)
+                    };
+                    let contents = match contents {
+                        Ok(content) => content,
+                        Err(_) => continue,
+                    };
+                    let (line, snippet) = snippet_for_query(&contents, query_text);
                     results.push(SearchResult {
                         path,
                         line,
@@ -228,12 +285,7 @@ fn symbol_kind(language: &str, node_kind: &str) -> Option<&'static str> {
     }
 }
 
-fn snippet_for_query(path: &Path, query: &str) -> (usize, String) {
-    let contents = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(_) => return (1, String::new()),
-    };
-
+fn snippet_for_query(contents: &str, query: &str) -> (usize, String) {
     let needle = query.to_lowercase();
     for (idx, line) in contents.lines().enumerate() {
         if line.to_lowercase().contains(&needle) {
@@ -241,7 +293,12 @@ fn snippet_for_query(path: &Path, query: &str) -> (usize, String) {
         }
     }
 
-    (1, contents.lines().next().unwrap_or("").trim().to_string())
+    let fallback = contents.lines().next().unwrap_or("").trim().to_string();
+    if fallback.is_empty() {
+        (DEFAULT_LINE_NUMBER, "No matching line found".to_string())
+    } else {
+        (DEFAULT_LINE_NUMBER, fallback)
+    }
 }
 
 #[derive(Clone)]
