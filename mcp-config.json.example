@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "code-ref": {
+      "command": "/path/to/code-ref-mcp/target/release/code-ref-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

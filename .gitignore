@@ -1,0 +1,24 @@
+# Rust
+target/
+Cargo.lock
+*.rs.bk
+*.pdb
+
+# Index data
+index/
+*.idx
+
+# Test files
+test_data/
+test_client.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
